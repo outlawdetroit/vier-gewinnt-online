@@ -10,15 +10,169 @@
 <p class="footer">Kein Konto nötig. Die Spielverbindung läuft direkt zwischen den Geräten.</p></main>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-const $=id=>document.getElementById(id);let peer,conn,host=false,room='',board=Array(42).fill(0),turn=1,over=false,redScore=0,yellowScore=0,drawScore=0,rematchVotes=0;
-const lobby=$('lobby'),game=$('game');function msg(t){$('lobbyMsg').textContent=t}function setStatus(t){$('status').textContent=t}function draw(){const b=$('board');b.innerHTML='';for(let r=0;r<6;r++)for(let c=0;c<7;c++){let i=r*7+c,cell=document.createElement('div');cell.className='cell';cell.dataset.col=c;let d=document.createElement('div');d.className='disc '+(board[i]===1?'red':board[i]===2?'yellow':'empty');cell.append(d);cell.onclick=()=>move(c);b.append(cell)}$('redScore').textContent=redScore;$('yellowScore').textContent=yellowScore;$('drawScore').textContent=drawScore}
-function winner(p){for(let r=0;r<6;r++)for(let c=0;c<7;c++){let i=r*7+c;if(board[i]!==p)continue;for(let [dr,dc] of [[0,1],[1,0],[1,1],[1,-1]]){let ok=true;for(let k=1;k<4;k++){let rr=r+dr*k,cc=c+dc*k;if(rr<0||rr>=6||cc<0||cc>=7||board[rr*7+cc]!==p){ok=false;break}}if(ok)return true}}return false}
-function move(col,remote=false){if(over||(!remote&&turn!==(host?1:2)))return;let row=-1;for(let r=5;r>=0;r--)if(!board[r*7+col]){row=r;break}if(row<0)return;board[row*7+col]=turn;if(!remote)send({type:'move',col});if(winner(turn)){over=true;if(turn===1)redScore++;else yellowScore++;setStatus((turn=== (host?1:2)?'Du':'Dein Gegner')+' gewinnt! 🎉');}else if(board.every(Boolean)){over=true;drawScore++;setStatus('Unentschieden!');}else{turn=3-turn;setStatus((turn===(host?1:2)?'Du':'Dein Gegner')+' bist am Zug · '+(turn===1?'🔴':'🟡'))}draw()}
-function send(data){if(conn&&conn.open)conn.send(data)}function resetBoard(){board=Array(42).fill(0);turn=1;over=false;rematchVotes=0;draw();setStatus('🔴 ist am Zug')}
-function startGame(){lobby.classList.add('hide');game.classList.remove('hide');$('role').textContent='Du: '+(host?'🔴':'🟡');$('roomInfo').textContent='Raumcode: '+room;resetBoard()}
-function newPeer(){peer=new Peer();peer.on('error',e=>{msg('Verbindungsfehler: '+e.type+'. Bitte erneut versuchen.');if(game.classList.contains('hide')){} });peer.on('disconnected',()=>{try{peer.reconnect()}catch(e){}})}
-$('create').onclick=()=>{msg('Raum wird erstellt…');host=true;newPeer();peer.on('open',id=>{room=id;$('codeInput').value=room;msg('Deine Raum-ID: '+room+' – teile sie mit deinem Mitspieler. Warte auf Verbindung…');peer.on('connection',c=>{if(conn)return;conn=c;wire();startGame()})})};
-$('join').onclick=()=>{let code=$('codeInput').value.trim();if(!code){msg('Bitte einen Raumcode eingeben.');return}msg('Verbinde…');host=false;newPeer();peer.on('open',()=>{conn=peer.connect(code,{reliable:true});wire();conn.on('open',()=>{room=code.toUpperCase();send({type:'hello'});startGame()});conn.on('error',()=>msg('Verbindung fehlgeschlagen. Code prüfen und erneut versuchen.'))})};
-function wire(){conn.on('data',data=>{if(data.type==='move')move(data.col,true);if(data.type==='rematch'){rematchVotes++;if(rematchVotes>=2)resetBoard();else setStatus('Dein Gegner möchte eine neue Runde. Tippe ebenfalls „Neue Runde“.')}if(data.type==='leave'){setStatus('Dein Gegner hat den Raum verlassen.');$('conn').textContent='Gegner weg'}});conn.on('close',()=>{$('conn').textContent='Verbindung getrennt';setStatus('Verbindung getrennt.')});}
-$('rematch').onclick=()=>{if(over){rematchVotes++;send({type:'rematch'});if(rematchVotes>=2)resetBoard();else setStatus('Warte auf Zustimmung zur neuen Runde…')}else{send({type:'rematch'});setStatus('Neue Runde angefragt…')}};$('leave').onclick=()=>{send({type:'leave'});if(conn)conn.close();if(peer)peer.destroy();game.classList.add('hide');lobby.classList.remove('hide');msg('Du hast den Raum verlassen. Erstelle einen neuen Raum oder tritt bei.')};
+const $=id=>document.getElementById(id);
+let peer=null, conn=null, host=false, room="", board=Array(42).fill(0), turn=1, over=false;
+let redScore=0, yellowScore=0, drawScore=0, connected=false, reconnectTimer=null;
+const lobby=$("lobby"), game=$("game");
+function msg(t){$("lobbyMsg").textContent=t}
+function setStatus(t){$("status").textContent=t}
+function send(data){if(conn && conn.open) conn.send(data)}
+function turnText(){setStatus((turn===(host?1:2)?"Du bist":"Dein Gegner ist")+" am Zug · "+(turn===1?"🔴":"🟡"))}
+function render(){
+  const el=$("board"); el.innerHTML="";
+  for(let r=0;r<6;r++) for(let c=0;c<7;c++){
+    const i=r*7+c, cell=document.createElement("div"), disc=document.createElement("div");
+    cell.className="cell"; disc.className="disc "+(board[i]===1?"red":board[i]===2?"yellow":"empty");
+    cell.append(disc); cell.onclick=()=>playColumn(c); el.append(cell);
+  }
+  $("redScore").textContent=redScore; $("yellowScore").textContent=yellowScore; $("drawScore").textContent=drawScore;
+}
+function hasWon(p){
+  for(let r=0;r<6;r++) for(let c=0;c<7;c++){
+    if(board[r*7+c]!==p) continue;
+    for(const [dr,dc] of [[0,1],[1,0],[1,1],[1,-1]]){
+      let ok=true;
+      for(let k=1;k<4;k++){
+        const rr=r+dr*k, cc=c+dc*k;
+        if(rr<0||rr>=6||cc<0||cc>=7||board[rr*7+cc]!==p){ok=false;break}
+      }
+      if(ok) return true;
+    }
+  }
+  return false;
+}
+function makeState(){return {type:"state",board:[...board],turn,over,redScore,yellowScore,drawScore}}
+function finishMove(){
+  if(hasWon(turn)){
+    over=true;
+    if(turn===1) redScore++; else yellowScore++;
+    setStatus(turn===(host?1:2)?"Du hast gewonnen! 🎉":"Dein Gegner hat gewonnen!");
+  } else if(board.every(Boolean)){
+    over=true; drawScore++; setStatus("Unentschieden!");
+  } else {
+    turn=3-turn; turnText();
+  }
+  render();
+  send(makeState());
+}
+function applyHostMove(col){
+  if(!Number.isInteger(col)||col<0||col>6||over||turn!==2) return;
+  let row=-1;
+  for(let r=5;r>=0;r--) if(board[r*7+col]===0){row=r;break}
+  if(row<0) return;
+  board[row*7+col]=2;
+  finishMove();
+}
+function playColumn(col){
+  if(!connected||over) return;
+  if(host){
+    if(turn!==1) return;
+    let row=-1;
+    for(let r=5;r>=0;r--) if(board[r*7+col]===0){row=r;break}
+    if(row<0) return;
+    board[row*7+col]=1;
+    finishMove();
+  } else {
+    if(turn===2) send({type:"move",col});
+  }
+}
+function receiveState(s){
+  if(!s||s.type!=="state"||!Array.isArray(s.board)||s.board.length!==42) return;
+  board=s.board; turn=s.turn; over=!!s.over;
+  redScore=s.redScore||0; yellowScore=s.yellowScore||0; drawScore=s.drawScore||0;
+  render();
+  if(over) setStatus("Runde beendet"); else turnText();
+}
+function resetRound(){
+  board=Array(42).fill(0); turn=1; over=false; render(); setStatus("🔴 ist am Zug");
+  send(makeState());
+}
+function showGame(){
+  lobby.classList.add("hide"); game.classList.remove("hide");
+  $("role").textContent="Du: "+(host?"🔴 Rot":"🟡 Gelb");
+  $("roomInfo").textContent="Raumcode: "+room;
+  $("conn").textContent="Verbunden";
+  render();
+}
+function createPeer(){
+  if(peer) {try{peer.destroy()}catch(e){}}
+  // STUN helps direct connections; TURN is the fallback for restrictive mobile/WLAN networks.
+  peer=new Peer(undefined,{
+    debug:1,
+    config:{iceServers:[
+      {urls:"stun:stun.l.google.com:19302"},
+      {urls:"stun:stun1.l.google.com:19302"},
+      {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
+      {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+      {urls:"turns:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"}
+    ]}
+  });
+  peer.on("error",e=>{
+    const detail=e.type||e.message||"Unbekannter Fehler";
+    msg("Verbindungsfehler: "+detail+". Bitte Seite neu laden und erneut versuchen.");
+    if(!connected) $("conn").textContent="Nicht verbunden";
+  });
+  peer.on("disconnected",()=>{try{peer.reconnect()}catch(e){}});
+  return peer;
+}
+function onConnection(c){
+  conn=c;
+  c.on("open",()=>{
+    connected=true; showGame();
+    if(host) send(makeState());
+  });
+  c.on("data",d=>{
+    if(!d) return;
+    if(host){
+      if(d.type==="move") applyHostMove(Number(d.col));
+      if(d.type==="rematch") resetRound();
+      if(d.type==="leave"){ $("conn").textContent="Gegner weg"; setStatus("Dein Gegner hat den Raum verlassen."); }
+    } else {
+      if(d.type==="state") receiveState(d);
+      if(d.type==="leave"){ $("conn").textContent="Gegner weg"; setStatus("Dein Gegner hat den Raum verlassen."); }
+    }
+  });
+  c.on("close",()=>{
+    connected=false; $("conn").textContent="Getrennt";
+    setStatus("Verbindung getrennt. Bitte beide die Seite neu laden.");
+  });
+  c.on("error",e=>{msg("Datenverbindung fehlgeschlagen: "+(e.type||"Fehler"));});
+}
+$("create").onclick=()=>{
+  msg("Erstelle Raum…"); host=true; connected=false;
+  const p=createPeer();
+  p.on("open",id=>{
+    room=id; $("codeInput").value=id;
+    msg("Raum erstellt! Teile diesen Code mit deiner Mitspielerin/deinem Mitspieler: "+id+". Warte auf Verbindung…");
+  });
+  p.on("connection",c=>{
+    if(conn){c.close();return}
+    onConnection(c);
+  });
+};
+$("join").onclick=()=>{
+  const code=$("codeInput").value.trim();
+  if(!code){msg("Bitte zuerst den Raumcode eingeben.");return}
+  msg("Verbinde mit Raum "+code+"…"); host=false; connected=false; room=code;
+  const p=createPeer();
+  p.on("open",()=>{
+    const c=p.connect(code,{reliable:true});
+    onConnection(c);
+    reconnectTimer=setTimeout(()=>{
+      if(!connected) msg("Noch keine Verbindung. Prüft den Raumcode und ladet beide die Seite neu. Falls es weiter scheitert, blockiert möglicherweise das Netzwerk die Verbindung.");
+    },15000);
+  });
+};
+$("rematch").onclick=()=>{
+  if(host) resetRound();
+  else {send({type:"rematch"});setStatus("Neue Runde angefragt – warte auf den Host…")}
+};
+$("leave").onclick=()=>{
+  send({type:"leave"});
+  if(conn) conn.close();
+  if(peer) peer.destroy();
+  conn=null; peer=null; connected=false; host=false;
+  game.classList.add("hide"); lobby.classList.remove("hide");
+  msg("Raum verlassen. Du kannst einen neuen Raum erstellen oder einem beitreten.");
+};
 </script><script>if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(()=>{}));}</script></body></html>
