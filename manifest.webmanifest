@@ -1,14 +1,13 @@
 {
   "name": "Vier Gewinnt Online",
   "short_name": "Vier Gewinnt",
-  "description": "Werbefreies Vier Gewinnt für zwei iPhones.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
   "background_color": "#07111f",
   "theme_color": "#07111f",
   "icons": [
-    {"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+    {"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "icon-180.png", "sizes": "180x180", "type": "image/png"}
   ]
 }
