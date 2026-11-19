@@ -12,6 +12,24 @@
 <script>
 const $=id=>document.getElementById(id);
 const PREFIX="vg4online-";
+const TURN_KEY="e641de1ed12311c8f6df297d641c7ce142ae";
+const TURN_URLS=[
+  "https://outlawdetroit.metered.live/api/v1/turn/credentials?apiKey="+TURN_KEY,
+  "https://openrelayproject.metered.ca/api/v1/turn/credentials?apiKey="+TURN_KEY
+];
+let ICE=[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}];
+// Probiert die URLs der Reihe nach, nimmt die erste, die TURN-Server liefert
+const iceReady=(async()=>{
+  for(const u of TURN_URLS){
+    try{
+      const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),6000);
+      const r=await fetch(u,{signal:ctl.signal}); clearTimeout(t);
+      if(!r.ok) continue;
+      const l=await r.json();
+      if(Array.isArray(l)&&l.length){ ICE=[...ICE,...l]; return; }
+    }catch(e){}
+  }
+})();
 let peer=null, conn=null, host=false, room="", board=Array(42).fill(0), turn=1, over=false;
 let redScore=0, yellowScore=0, drawScore=0, connected=false, joinTimer=null;
 const lobby=$("lobby"), game=$("game");
@@ -109,18 +127,13 @@ function createPeer(id){
   if(peer) {try{peer.destroy()}catch(e){}}
   peer=new Peer(id,{
     debug:1,
-    config:{iceServers:[
-      {urls:"stun:stun.l.google.com:19302"},
-      {urls:"stun:stun1.l.google.com:19302"},
-      {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
-      {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
-      {urls:"turns:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"}
-    ]}
+    config:{iceServers:ICE}
   });
   peer.on("error",e=>{
     if(e.type==="unavailable-id"||e.type==="peer-unavailable") return; // werden gezielt behandelt
     const detail=e.type||e.message||"Unbekannter Fehler";
-    msg("Verbindungsfehler: "+detail+". Bitte Seite neu laden und erneut versuchen.");
+    if(e.type==="negotiation-failed") msg("Direkte Verbindung nicht möglich (Netzwerk blockiert). Beide ins gleiche WLAN oder einen TURN-Server eintragen. Seite neu laden und erneut versuchen.");
+    else msg("Verbindungsfehler: "+detail+". Bitte Seite neu laden und erneut versuchen.");
     if(!connected){$("conn").textContent="Nicht verbunden"; lockLobby(false);}
   });
   peer.on("disconnected",()=>{try{peer.reconnect()}catch(e){}});
@@ -171,15 +184,17 @@ function startHost(tries){
     }
   });
 }
-$("create").onclick=()=>{
+$("create").onclick=async()=>{
   lockLobby(true); msg("Erstelle Raum…"); host=true; connected=false;
+  await iceReady;
   startHost();
 };
-$("join").onclick=()=>{
+$("join").onclick=async()=>{
   const code=$("codeInput").value.trim().toUpperCase();
   if(code.length!==5){msg("Bitte den 5-stelligen Raumcode eingeben.");return}
   lockLobby(true);
   msg("Verbinde mit Raum "+code+"…"); host=false; connected=false; room=code;
+  await iceReady;
   const p=createPeer();
   p.on("open",()=>{
     const c=p.connect(PREFIX+code,{reliable:true});

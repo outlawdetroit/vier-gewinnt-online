@@ -1,5 +1,5 @@
 // Version bei jeder Änderung hochzählen -> alte Caches werden gelöscht
-const CACHE="vier-gewinnt-v2";
+const CACHE="vier-gewinnt-v5";
 const FILES=["./","./index.html","./manifest.webmanifest","./icon.svg","./icon-180.png"];
 
 self.addEventListener("install",e=>{
